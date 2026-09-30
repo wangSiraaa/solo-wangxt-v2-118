@@ -23,3 +23,18 @@ venv/
 __pycache__/
 .pytest_cache/
 .DS_Store
+
+# Java / Maven
+target/
+*.class
+*.jar
+!**/.mvn/wrapper/maven-wrapper.jar
+backend/data/
+
+# Angular / Node
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+.idea/
+*.iml
+.vscode/
