@@ -1,0 +1,322 @@
+<main class="app-shell">
+  <section class="hero">
+    <div>
+      <h1>内部债务清算试算</h1>
+      <p>按“协议 + 币种”分组互抵；排除质押、争议和协议边界外债权。确认只锁定清算方案，不发起真实银行付款。</p>
+    </div>
+    <div class="bank-note">
+      <strong>安全边界：</strong>所有付款均为模拟指令，无银行接口、无真实划款。
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>试算参数</h2>
+    <div class="controls">
+      <div class="field">
+        <label for="agreement">协议（留空=全部）</label>
+        <select id="agreement" [(ngModel)]="agreementCode">
+          <option value="">全部允许互抵协议</option>
+          <option value="NA-TRI">NA-TRI 三方协议</option>
+          <option value="NA-BILAT">NA-BILAT 双边协议</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="currency">原币过滤</label>
+        <select id="currency" [(ngModel)]="currency">
+          <option value="">全部币种</option>
+          <option value="CNY">CNY</option>
+          <option value="EUR">EUR</option>
+          <option value="USD">USD</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="target">模拟换币展示</label>
+        <select id="target" [(ngModel)]="targetCurrency" [disabled]="!includeFxDisplay">
+          <option value="CNY">CNY</option>
+          <option value="EUR">EUR</option>
+          <option value="USD">USD</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="time">人工汇率时点</label>
+        <input id="time" type="datetime-local" [(ngModel)]="fxRateTime" [disabled]="!includeFxDisplay">
+      </div>
+      <div class="field">
+        <label for="bearer">换币尾差归属</label>
+        <select id="bearer" [(ngModel)]="residualBearer">
+          <option value="PAYER">付款方承担</option>
+          <option value="RECEIVER">收款方承担</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top: 12px" class="grid two">
+      <div>
+        <label><input type="checkbox" [(ngModel)]="includeFxDisplay"> 跨币种时显示人工折算、汇率时点和尾差（不混合净额）</label>
+        <div class="grid two" style="margin-top: 8px">
+          <div class="field">
+            <label>EUR → {{ targetCurrency }} 汇率</label>
+            <input type="number" step="0.00000000001" [(ngModel)]="eurToTarget" [disabled]="!includeFxDisplay">
+          </div>
+          <div class="field">
+            <label>USD → {{ targetCurrency }} 汇率</label>
+            <input type="number" step="0.00000000001" [(ngModel)]="usdToTarget" [disabled]="!includeFxDisplay">
+          </div>
+          <div class="field">
+            <label>CNY → {{ targetCurrency }} 汇率</label>
+            <input type="number" step="0.00000000001" [(ngModel)]="cnyToTarget" [disabled]="!includeFxDisplay">
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="align-items: center">
+        <button class="btn" (click)="runTrial()" [disabled]="loading">生成确认前试算</button>
+        <button class="btn success" (click)="confirm()"
+                [disabled]="!result || result.status !== 'TRIAL' || confirming">
+          {{ confirming ? '确认中...' : '确认方案（不付款）' }}
+        </button>
+        <button class="btn secondary" (click)="reload()" [disabled]="loading">重载数据</button>
+      </div>
+    </div>
+
+    <div class="error" *ngIf="error">{{ error }}</div>
+    <div class="success-note" *ngIf="note">{{ note }}</div>
+  </section>
+
+  <section class="stats" *ngIf="result">
+    <div class="stat">
+      <div class="value">{{ result.grossPaymentCount }}</div>
+      <div class="label">原始应付款笔数</div>
+    </div>
+    <div class="stat">
+      <div class="value">{{ result.residualPaymentCount }}</div>
+      <div class="label">模拟净付款笔数</div>
+    </div>
+    <div class="stat">
+      <div class="value positive">{{ result.eliminatedPaymentCount }}</div>
+      <div class="label">减少笔数</div>
+    </div>
+    <div class="stat">
+      <span class="badge" [ngClass]="statusClass(result.status)">
+        {{ result.status === 'TRIAL' ? '试算方案' : '已确认方案' }}
+      </span>
+      <div class="label" style="margin-top: 8px">{{ result.batchRef }}</div>
+    </div>
+  </section>
+
+  <section class="grid two" style="margin-top: 16px">
+    <div class="card">
+      <h2>Angular 债务图</h2>
+      <p class="muted">点击边可追到原始发票；蓝色=仍需模拟净付款，绿色=互抵，红色=排除，紫色=同一模拟付款链。</p>
+      <div class="legend">
+        <span class="offset">互抵</span>
+        <span class="residual">模拟净付款</span>
+        <span class="chain">选中/链式</span>
+        <span class="excluded">排除或无协议</span>
+      </div>
+      <app-debt-graph
+        [claims]="claims"
+        [result]="result"
+        [selectedInvoice]="selectedInvoice"
+        (selectedInvoiceChange)="selectInvoice($event)">
+      </app-debt-graph>
+    </div>
+
+    <div class="card">
+      <h2>原始发票追踪</h2>
+      <ng-container *ngIf="selectedClaim() as claim">
+        <h3>{{ claim.invoiceNumber }}</h3>
+        <p><strong>{{ claim.debtor.name }}</strong> 欠 <strong>{{ claim.creditor.name }}</strong></p>
+        <p>金额：{{ claim.amount }} {{ claim.currency }}</p>
+        <p>协议：{{ claim.agreement?.name ?? '无协议' }}</p>
+        <p>{{ claim.description }}</p>
+        <p>
+          <span class="badge" [ngClass]="isEligible(claim) ? 'included' : 'excluded'">
+            {{ isEligible(claim) ? '纳入试算' : '排除/保留原债' }}
+          </span>
+          <span class="badge" [ngClass]="claim.status === 'OPEN' ? 'trial' : 'confirmed'" style="margin-left: 6px">
+            {{ claim.status }}
+          </span>
+        </p>
+        <div *ngIf="exclusionFor(claim) as excluded">
+          <strong>排除原因：</strong>
+          <span class="badge excluded" *ngFor="let reason of excluded.reasons" style="margin: 2px">
+            {{ exclusionText(reason) }}
+          </span>
+        </div>
+
+        <h3 style="margin-top: 18px">抵到哪里</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+            <tr><th>类型</th><th>金额</th><th>模拟付款</th></tr>
+            </thead>
+            <tbody>
+            <tr *ngFor="let item of selectedTraces()">
+              <td>{{ allocationText(item.trace.allocationType) }}</td>
+              <td>{{ item.trace.allocatedAmount }} {{ item.group.currency }}</td>
+              <td>{{ item.trace.settlementSequenceNo ?? '无（互抵）' }}</td>
+            </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 style="margin-top: 18px">同一条模拟付款链上的发票</h3>
+        <ng-container *ngIf="relatedInvoices().length; else noRelated">
+          <span class="invoice-chip" *ngFor="let invoice of relatedInvoices()">{{ invoice }}</span>
+        </ng-container>
+        <ng-template #noRelated><p class="muted">没有关联的净付款，或该发票被互抵/排除。</p></ng-template>
+      </ng-container>
+      <p class="muted" *ngIf="!selectedClaim()">点击图上的债项边，选择一张原始发票查看完整追踪。</p>
+    </div>
+  </section>
+
+  <section class="grid two" style="margin-top: 16px">
+    <div class="card">
+      <h2>清算分组、净头寸与尾差校验</h2>
+      <div *ngFor="let group of result?.groups ?? []" style="margin-bottom: 22px">
+        <h3>{{ group.agreementCode }} · {{ group.currency }}</h3>
+        <p class="muted">
+          {{ group.grossPaymentCount }} 笔原债 → {{ group.residualPaymentCount }} 笔模拟净付款；
+          互抵 {{ group.mutualOffsetAmount }}，净额 {{ group.residualAmount }} {{ group.currency }}
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>法人</th><th>应付</th><th>应收</th><th>净头寸</th></tr></thead>
+            <tbody>
+            <tr *ngFor="let p of group.positions">
+              <td>{{ p.entity.code }} {{ p.entity.name }}</td>
+              <td>{{ p.payable }}</td>
+              <td>{{ p.receivable }}</td>
+              <td [ngClass]="netClass(p.netPosition)">{{ p.netPosition }}</td>
+            </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="settlement" *ngFor="let s of group.settlements">
+          <strong>#{{ s.sequenceNo }} 模拟付款：</strong>
+          {{ s.payer.name }} → {{ s.receiver.name }}
+          <div>{{ s.amount }} {{ s.currency }}</div>
+          <div>
+            <span class="invoice-chip" *ngFor="let t of s.trace">
+              {{ t.invoiceNumber }} · {{ t.allocatedAmount }}
+            </span>
+          </div>
+          <div class="fx-box" *ngIf="s.fx">            <strong>跨币种展示（不改变原币净头寸）：</strong>
+            {{ s.fx.fromCurrency }}/{{ s.fx.toCurrency }} = {{ s.fx.rate }}，
+            时点 {{ s.fx.rateTime | date:'medium' }}，
+            折算 {{ s.fx.convertedAmount }} {{ s.fx.toCurrency }}；
+            尾差 {{ s.fx.residualAmount }} 由
+            {{ s.fx.residualBearer === 'PAYER' ? s.payer.name : s.receiver.name }}
+            承担。<span class="muted">来源：{{ s.fx.source }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>按币种汇总与法人余额不变证明</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>币种</th><th>原始总额</th><th>互抵</th><th>模拟净付</th></tr></thead>
+          <tbody>
+          <tr *ngFor="let total of result?.amountTotals ?? []">
+            <td>{{ total.currency }}</td>
+            <td>{{ total.grossAmount }}</td>
+            <td class="positive">{{ total.mutualOffsetAmount }}</td>
+            <td class="negative">{{ total.residualAmount }}</td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-top: 18px">每个法人/协议/币种的差额</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr><th>协议</th><th>币种</th><th>法人</th><th>原净头寸</th><th>方案后</th><th>差额</th></tr>
+          </thead>
+          <tbody>
+          <tr *ngFor="let check of result?.balanceChecks ?? []">
+            <td>{{ check.agreementCode }}</td>
+            <td>{{ check.currency }}</td>
+            <td>{{ check.entity.code }}</td>
+            <td>{{ check.originalNetPosition }}</td>
+            <td>{{ check.proposedNetPosition }}</td>
+            <td [ngClass]="check.difference === 0 ? 'positive' : 'negative'">{{ check.difference }}</td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-top: 18px">排除债权：保留原始债务</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>发票</th><th>债务</th><th>金额</th><th>原因</th></tr></thead>
+          <tbody>
+          <tr *ngFor="let item of result?.excludedClaims ?? []">
+            <td>{{ item.claim.invoiceNumber }}</td>
+            <td>{{ item.claim.debtor.code }} → {{ item.claim.creditor.code }}</td>
+            <td>{{ item.claim.amount }} {{ item.claim.currency }}</td>
+            <td>
+              <span class="badge excluded" *ngFor="let reason of item.reasons" style="margin:2px">
+                {{ exclusionText(reason) }}
+              </span>
+            </td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid two" style="margin-top: 16px">
+    <div class="card">
+      <h2>原始债权台账</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr><th>发票</th><th>债务人</th><th>债权人</th><th>金额</th><th>协议</th><th>状态/标记</th></tr>
+          </thead>
+          <tbody>
+          <tr *ngFor="let claim of allClaims"
+              [style.background]="claim.invoiceNumber === selectedInvoice ? '#f5f3ff' : ''">
+            <td><a href="javascript:void(0)" (click)="selectInvoice(claim.invoiceNumber)">
+              {{ claim.invoiceNumber }}
+            </a></td>
+            <td>{{ claim.debtor.code }}</td>
+            <td>{{ claim.creditor.code }}</td>
+            <td>{{ claim.amount }} {{ claim.currency }}</td>
+            <td>{{ claim.agreement?.code ?? '—' }}</td>
+            <td>
+              {{ claim.status }}
+              <span class="badge excluded" *ngIf="claim.pledged">质押</span>
+              <span class="badge excluded" *ngIf="claim.disputed">争议</span>
+            </td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>PostgreSQL 批次</h2>
+      <p class="muted">试算与确认批次均保留；确认批次记录原始债权的全量分配链，但不会调用银行。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>批次</th><th>状态</th><th>缩减</th><th>时间</th><th></th></tr></thead>
+          <tbody>
+          <tr *ngFor="let batch of batches">
+            <td>{{ batch.batchRef }}</td>
+            <td><span class="badge" [ngClass]="statusClass(batch.status)">{{ batch.status }}</span></td>
+            <td>{{ batch.grossPaymentCount }} → {{ batch.residualPaymentCount }}</td>
+            <td>{{ batch.calculatedAt | date:'short' }}</td>
+            <td><button class="btn secondary" (click)="loadBatch(batch.batchId)">查看</button></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" *ngIf="result">当前方案输入签名：{{ result.inputSignature }}</p>
+    </div>
+  </section>
+</main>
